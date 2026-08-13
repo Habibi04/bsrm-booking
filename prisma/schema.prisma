@@ -1,8 +1,6 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
@@ -10,4 +8,233 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+enum Role {
+  EMPLOYEE
+  LOCAL_ADMIN
+  SUPER_ADMIN
+}
+
+enum RoomFacilityStatus {
+  AVAILABLE
+  NOT_AVAILABLE
+  OUT_OF_ORDER
+}
+
+enum BookingStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+  COMPLETED
+}
+
+enum RefreshmentCategory {
+  BEVERAGE
+  SNACK
+  MEAL
+}
+
+enum RefreshmentTriggerMode {
+  MEETING_OVERLAPS_WINDOW
+  MEETING_STARTS_IN_WINDOW
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  phone        String?
+  department   String?
+  role         Role
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  requestedBookings Booking[]  @relation("BookingRequester")
+  reviewedBookings  Booking[]  @relation("BookingReviewer")
+  feedback          Feedback[]
+  auditLogs         AuditLog[]
+}
+
+model Room {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  location    String
+  capacity    Int
+  description String?
+  isActive    Boolean @default(true)
+
+  facilities        RoomFacility[]
+  preferredBookings Booking[]      @relation("PreferredRoomBookings")
+  assignedBookings  Booking[]      @relation("AssignedRoomBookings")
+}
+
+model Facility {
+  id       String  @id @default(cuid())
+  name     String  @unique
+  isActive Boolean @default(true)
+
+  rooms               RoomFacility[]
+  requestedInBookings Booking[]               @relation("RequestedFacilities")
+  facilityIssues      FeedbackFacilityIssue[]
+}
+
+model RoomFacility {
+  roomId     String
+  facilityId String
+  status     RoomFacilityStatus
+  note       String?
+
+  room     Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  facility Facility @relation(fields: [facilityId], references: [id], onDelete: Cascade)
+
+  @@id([roomId, facilityId])
+}
+
+model AttendeeType {
+  id       String  @id @default(cuid())
+  name     String  @unique
+  isActive Boolean @default(true)
+
+  bookingGroups    BookingAttendeeGroup[]
+  refreshmentRules RefreshmentRule[]
+}
+
+model Booking {
+  id              String        @id @default(cuid())
+  requesterId     String
+  title           String
+  purpose         String?
+  startTime       DateTime
+  endTime         DateTime
+  totalAttendees  Int
+  preferredRoomId String?
+  assignedRoomId  String?
+  status          BookingStatus @default(PENDING)
+  reviewedById    String?
+  reviewedAt      DateTime?
+  adminNote       String?
+  rejectionReason String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  requester           User                   @relation("BookingRequester", fields: [requesterId], references: [id])
+  reviewedBy          User?                  @relation("BookingReviewer", fields: [reviewedById], references: [id])
+  preferredRoom       Room?                  @relation("PreferredRoomBookings", fields: [preferredRoomId], references: [id])
+  assignedRoom        Room?                  @relation("AssignedRoomBookings", fields: [assignedRoomId], references: [id])
+  requestedFacilities Facility[]             @relation("RequestedFacilities")
+  attendeeGroups      BookingAttendeeGroup[]
+  refreshments        BookingRefreshment[]
+  feedback            Feedback[]
+
+  @@index([assignedRoomId, startTime, endTime])
+  @@index([status])
+}
+
+model BookingAttendeeGroup {
+  bookingId      String
+  attendeeTypeId String
+  count          Int
+
+  booking      Booking      @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  attendeeType AttendeeType @relation(fields: [attendeeTypeId], references: [id])
+
+  @@id([bookingId, attendeeTypeId])
+}
+
+model RefreshmentItem {
+  id                   String              @id @default(cuid())
+  name                 String              @unique
+  category             RefreshmentCategory
+  estimatedCostPerHead Decimal?            @db.Decimal(10, 2)
+  isActive             Boolean             @default(true)
+
+  refreshmentRules    RefreshmentRule[]
+  bookingRefreshments BookingRefreshment[]
+}
+
+// Refreshment rule time windows (appliesFromTime / appliesToTime) are
+// Asia/Dhaka wall-clock times (UTC+6). Booking.startTime and endTime are
+// stored in UTC. Any code comparing a booking against a rule must convert
+// the booking time to Dhaka time first — do not compare raw UTC values
+// against these windows.
+//
+// appliesFromTime/appliesToTime use @db.Time(), which comes back from the
+// driver as a Date whose time-of-day is set on the UTC fields. Always read
+// them with getUTCHours()/getUTCMinutes(), never getHours()/getMinutes() —
+// the local variants apply the server's own timezone offset and will give
+// the wrong hour.
+model RefreshmentRule {
+  id                 String                 @id @default(cuid())
+  name               String
+  appliesFromTime    DateTime               @db.Time()
+  appliesToTime      DateTime               @db.Time()
+  triggerMode        RefreshmentTriggerMode
+  minDurationMinutes Int
+  attendeeTypeId     String?
+  refreshmentItemId  String
+  qtyPerHead         Decimal                @default(1) @db.Decimal(5, 2)
+  priority           Int                    @default(0)
+  isActive           Boolean                @default(true)
+
+  attendeeType    AttendeeType?   @relation(fields: [attendeeTypeId], references: [id])
+  refreshmentItem RefreshmentItem @relation(fields: [refreshmentItemId], references: [id])
+}
+
+model BookingRefreshment {
+  id                String  @id @default(cuid())
+  bookingId         String
+  refreshmentItemId String
+  quantity          Int
+  isAutoSuggested   Boolean @default(true)
+  note              String?
+
+  booking         Booking         @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  refreshmentItem RefreshmentItem @relation(fields: [refreshmentItemId], references: [id])
+}
+
+model Feedback {
+  id                String   @id @default(cuid())
+  bookingId         String
+  userId            String
+  overallRating     Int
+  cleanlinessRating Int
+  facilitiesRating  Int
+  refreshmentRating Int?
+  comment           String?
+  submittedAt       DateTime @default(now())
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id])
+
+  facilityIssues FeedbackFacilityIssue[]
+
+  @@unique([bookingId, userId])
+  @@index([bookingId])
+}
+
+model FeedbackFacilityIssue {
+  id               String @id @default(cuid())
+  feedbackId       String
+  facilityId       String
+  issueDescription String
+
+  feedback Feedback @relation(fields: [feedbackId], references: [id], onDelete: Cascade)
+  facility Facility @relation(fields: [facilityId], references: [id])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String
+  action     String
+  entityType String
+  entityId   String
+  details    Json?
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([createdAt])
 }
